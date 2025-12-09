@@ -1,0 +1,620 @@
+local Players=game:GetService("Players")
+local UIS=game:GetService("UserInputService")
+local Workspace=game:GetService("Workspace")
+local RunService=game:GetService("RunService")
+local TweenService=game:GetService("TweenService")
+local TeleportService=game:GetService("TeleportService")
+local CoreGui=game:GetService("CoreGui")
+local StarterGui=game:GetService("StarterGui")
+local player=Players.LocalPlayer
+
+local CHECKPOINTS_MODEL_NAME="Model Checkpoints"
+local LOBBY_MODEL_NAME="Lobby11"
+local DELAY_BETWEEN_PARTS=0.05
+local CLEANUP_EVERY_N_PARTS=3
+local TRAVEL_SPEED_STUDS_PER_SEC=72
+local ARRIVAL_DIST=1.25
+local POS_243=Vector3.new(1755.76,715.21,-115.73)
+local POS_100=Vector3.new(-192.46,145.71,692.63)
+
+local checkpointsContainer=nil
+local indexToPart={}
+local autopilotActive=false
+local partsPassed=0
+local bodyGyro=nil
+local bodyVelocity=nil
+local noclipConn=nil
+local inputConn=nil
+local charAddedConn=nil
+local wsDescAddedConn=nil
+local wsDescRemovingConn=nil
+local cpDescAddedConn=nil
+local cpDescRemovingConn=nil
+
+local isOn=false
+local UpdateToggle=function()end
+local SaveState=function()end
+
+local function getHRPFast()
+	local char=player.Character
+	if not char then return nil end
+	return char:FindFirstChild("HumanoidRootPart")
+end
+local function getHumanoidFast()
+	local char=player.Character
+	if not char then return nil end
+	return char:FindFirstChildOfClass("Humanoid")
+end
+local function toIndex(name)
+	if not name or type(name)~="string" then return nil end
+	local n=tonumber(name)
+	if n and math.floor(n)==n and n>=0 then return n end
+	local tail=name:match("(%d+)%s*$")
+	if tail then
+		local t=tonumber(tail)
+		if t and math.floor(t)==t and t>=0 then return t end
+	end
+	local any=name:match("(%d+)")
+	if any then
+		local a=tonumber(any)
+		if a and math.floor(a)==a and a>=0 then return a end
+	end
+	return nil
+end
+local function nameHasCheckpointWord(str)
+	if not str then return false end
+	local s=string.lower(str)
+	return s:find("checkpoint")~=nil or s:find("check point")~=nil
+end
+local function findCheckpointsContainer()
+	for _,inst in ipairs(Workspace:GetDescendants()) do
+		if (inst:IsA("Model") or inst:IsA("Folder")) and inst.Name==CHECKPOINTS_MODEL_NAME then
+			return inst
+		end
+	end
+	for _,inst in ipairs(Workspace:GetDescendants()) do
+		if (inst:IsA("Model") or inst:IsA("Folder")) and nameHasCheckpointWord(inst.Name) then
+			return inst
+		end
+	end
+	return nil
+end
+local function isCheckpointPart(part)
+	if not part or not part:IsA("BasePart") then return false end
+	if checkpointsContainer then
+		return part:IsDescendantOf(checkpointsContainer)
+	end
+	local p=part.Parent
+	while p do
+		if nameHasCheckpointWord(p.Name) then return true end
+		p=p.Parent
+	end
+	return false
+end
+local function indexPart(part)
+	if not part or not part:IsA("BasePart") then return end
+	if not isCheckpointPart(part) then return end
+	local idx=toIndex(part.Name)
+	if not idx then return end
+	indexToPart[idx]=part
+end
+local function removeIndexedPart(part)
+	if not part or not part:IsA("BasePart") then return end
+	local idx=toIndex(part.Name)
+	if not idx then return end
+	if indexToPart[idx]==part then
+		indexToPart[idx]=nil
+	end
+end
+local function scanExistingCheckpoints()
+	indexToPart={}
+	for _,d in ipairs(Workspace:GetDescendants()) do
+		if d:IsA("BasePart") then
+			indexPart(d)
+		end
+	end
+end
+local function getMinIndex()
+	local minI=nil
+	for i,p in pairs(indexToPart) do
+		if p and p.Parent then
+			if not minI or i<minI then minI=i end
+		end
+	end
+	return minI
+end
+local function getNextExistingIndex(fromIdx)
+	local best=nil
+	for i,p in pairs(indexToPart) do
+		if p and p.Parent and i>=fromIdx then
+			if not best or i<best then best=i end
+		end
+	end
+	return best
+end
+local function getNearestIndex(fromPos)
+	local bestIdx,bestDist=nil,math.huge
+	for idx,part in pairs(indexToPart) do
+		if part and part.Parent~=nil then
+			local d=(part.Position-fromPos).Magnitude
+			if d<bestDist then
+				bestDist=d
+				bestIdx=idx
+			end
+		end
+	end
+	return bestIdx
+end
+
+local function detachWatchers()
+	if wsDescAddedConn then wsDescAddedConn:Disconnect() wsDescAddedConn=nil end
+	if wsDescRemovingConn then wsDescRemovingConn:Disconnect() wsDescRemovingConn=nil end
+	if cpDescAddedConn then cpDescAddedConn:Disconnect() cpDescAddedConn=nil end
+	if cpDescRemovingConn then cpDescRemovingConn:Disconnect() cpDescRemovingConn=nil end
+end
+local function attachWatchers()
+	detachWatchers()
+	wsDescAddedConn=Workspace.DescendantAdded:Connect(function(obj)
+		if not autopilotActive then return end
+		if (obj:IsA("Model") or obj:IsA("Folder")) and (obj.Name==CHECKPOINTS_MODEL_NAME or nameHasCheckpointWord(obj.Name)) then
+			if not checkpointsContainer then
+				checkpointsContainer=obj
+			end
+		end
+		if obj:IsA("BasePart") then
+			indexPart(obj)
+		end
+	end)
+	wsDescRemovingConn=Workspace.DescendantRemoving:Connect(function(obj)
+		if not autopilotActive then return end
+		if obj:IsA("BasePart") then
+			removeIndexedPart(obj)
+		end
+	end)
+	if checkPointsContainer then end
+	if checkpointsContainer then
+		cpDescAddedConn=checkpointsContainer.DescendantAdded:Connect(function(obj)
+			if not autopilotActive then return end
+			if obj:IsA("BasePart") then
+				indexPart(obj)
+			end
+		end)
+		cpDescRemovingConn=checkpointsContainer.DescendantRemoving:Connect(function(obj)
+			if not autopilotActive then return end
+			if obj:IsA("BasePart") then
+				removeIndexedPart(obj)
+			end
+		end)
+	end
+end
+
+local function buildKeepSet()
+	local keepSet={}
+	local char=player.Character
+	local cam=Workspace.CurrentCamera
+	if char then keepSet[char]=true end
+	if cam then keepSet[cam]=true end
+	if Workspace.Terrain then keepSet[Workspace.Terrain]=true end
+	if checkpointsContainer then keepSet[checkpointsContainer]=true end
+	for _,inst in ipairs(Workspace:GetDescendants()) do
+		if inst.Name==LOBBY_MODEL_NAME then
+			keepSet[inst]=true
+		end
+	end
+	return keepSet
+end
+local function isAncestorOfKept(obj,keepSet)
+	for kept in pairs(keepSet) do
+		if kept and kept:IsDescendantOf(obj) then
+			return true
+		end
+	end
+	return false
+end
+local function cleanupWorkspace()
+	if not checkpointsContainer then return end
+	local keepSet=buildKeepSet()
+	for _,child in ipairs(Workspace:GetChildren()) do
+		local keepThis=keepSet[child]==true
+		if not keepThis and not isAncestorOfKept(child,keepSet) then
+			pcall(function() child:Destroy() end)
+		end
+	end
+end
+
+local function setBodyGyroEnabled(enabled)
+	local hrp=getHRPFast()
+	if not hrp then return end
+	if not bodyGyro or bodyGyro.Parent~=hrp then
+		if bodyGyro then pcall(function() bodyGyro:Destroy() end) bodyGyro=nil end
+		local bg=Instance.new("BodyGyro")
+		bg.Name="AutoFly_BG"
+		bg.P=9e4
+		bg.D=1e4
+		bg.MaxTorque=Vector3.new(0,0,0)
+		bg.CFrame=hrp.CFrame
+		bg.Parent=hrp
+		bodyGyro=bg
+	end
+	bodyGyro.CFrame=hrp.CFrame
+	bodyGyro.MaxTorque=enabled and Vector3.new(1e9,1e9,1e9) or Vector3.new(0,0,0)
+end
+local function ensureBodyVelocity()
+	local hrp=getHRPFast()
+	if not hrp then return nil end
+	if bodyVelocity and bodyVelocity.Parent~=hrp then
+		bodyVelocity:Destroy()
+		bodyVelocity=nil
+	end
+	if not bodyVelocity then
+		local bv=Instance.new("BodyVelocity")
+		bv.Name="AutoFly_BV"
+		bv.MaxForce=Vector3.new(1e9,1e9,1e9)
+		bv.P=2e4
+		bv.Velocity=Vector3.new(0,0,0)
+		bv.Parent=hrp
+		bodyVelocity=bv
+	end
+	return bodyVelocity
+end
+local function setNoClipEnabled(enabled)
+	if enabled then
+		if noclipConn then return end
+		noclipConn=RunService.Stepped:Connect(function()
+			local char=player.Character
+			if not char then return end
+			for _,obj in ipairs(char:GetDescendants()) do
+				if obj:IsA("BasePart") then
+					obj.CanCollide=false
+				end
+			end
+		end)
+	else
+		if noclipConn then noclipConn:Disconnect() noclipConn=nil end
+		local char=player.Character
+		if char then
+			for _,obj in ipairs(char:GetDescendants()) do
+				if obj:IsA("BasePart") then
+					obj.CanCollide=true
+				end
+			end
+		end
+	end
+end
+local function hoverWaitOneFrame()
+	local bv=ensureBodyVelocity()
+	if bv then
+		bv.MaxForce=Vector3.new(1e9,1e9,1e9)
+		bv.Velocity=Vector3.new(0,0,0)
+	end
+	setBodyGyroEnabled(true)
+	RunService.Heartbeat:Wait()
+end
+local function flyToPosition(dest)
+	local hrp=getHRPFast()
+	local humanoid=getHumanoidFast()
+	if not hrp or not humanoid then return false end
+	hrp.Anchored=false
+	hrp.CanCollide=false
+	setBodyGyroEnabled(false)
+	local bv=ensureBodyVelocity()
+	if not bv then return false end
+	while autopilotActive do
+		local char=player.Character
+		local hum=getHumanoidFast()
+		if not char or not hum or hum.Health<=0 then
+			return false
+		end
+		hrp=getHRPFast()
+		if not hrp then return false end
+		local diff=dest-hrp.Position
+		local dist=diff.Magnitude
+		if dist<=ARRIVAL_DIST then
+			bv.Velocity=Vector3.new(0,0,0)
+			hrp.CFrame=CFrame.new(dest,dest+hrp.CFrame.LookVector)
+			return true
+		end
+		local dir=diff.Unit
+		bv.MaxForce=Vector3.new(1e9,1e9,1e9)
+		bv.P=2e4
+		bv.Velocity=dir*TRAVEL_SPEED_STUDS_PER_SEC
+		RunService.Heartbeat:Wait()
+	end
+	return false
+end
+local function flyToPart(targetPart)
+	if not (targetPart and targetPart.Parent) then return false end
+	return flyToPosition(targetPart.Position)
+end
+local function handleFlyAndWaitAtIndex(specialIdx,pos)
+	local ok=flyToPosition(pos)
+	if not ok then return nil end
+	local nextIdx=nil
+	while autopilotActive do
+		local char=player.Character
+		local hum=getHumanoidFast()
+		if not char or not hum or hum.Health<=0 then
+			return nil
+		end
+		local bv=ensureBodyVelocity()
+		if bv then
+			bv.MaxForce=Vector3.new(1e9,1e9,1e9)
+			bv.Velocity=Vector3.new(0,0,0)
+		end
+		setBodyGyroEnabled(true)
+		local hrp=getHRPFast()
+		if hrp then
+			local nearest=getNearestIndex(hrp.Position)
+			if nearest and nearest~=specialIdx then
+				nextIdx=nearest
+				break
+			end
+		end
+		RunService.Heartbeat:Wait()
+	end
+	return nextIdx
+end
+local function stopAutopilot()
+	autopilotActive=false
+	detachWatchers()
+	setBodyGyroEnabled(false)
+	local bv=bodyVelocity
+	if bv then bv.Velocity=Vector3.new(0,0,0) bv.MaxForce=Vector3.new(0,0,0) end
+	setNoClipEnabled(false)
+	local char=player.Character
+	if char then
+		for _,obj in ipairs(char:GetDescendants()) do
+			if obj:IsA("BasePart") then
+				obj.CanCollide=true
+			end
+		end
+		local hrp=char:FindFirstChild("HumanoidRootPart")
+		if hrp and hrp:IsA("BasePart") then
+			hrp.Anchored=false
+		end
+	end
+end
+local function startAutopilot()
+	if autopilotActive then return end
+	autopilotActive=true
+	partsPassed=0
+	indexToPart={}
+	checkpointsContainer=findCheckpointsContainer()
+	setNoClipEnabled(true)
+	local hrp=getHRPFast()
+	if hrp then
+		hrp.Anchored=false
+		hrp.CanCollide=false
+	end
+	ensureBodyVelocity()
+	setBodyGyroEnabled(true)
+	attachWatchers()
+	scanExistingCheckpoints()
+	cleanupWorkspace()
+	local targetIdx=nil
+	hrp=getHRPFast()
+	if hrp then
+		local nearest=getNearestIndex(hrp.Position)
+		if nearest~=nil then
+			targetIdx=getNextExistingIndex(nearest+1) or nearest
+		end
+	end
+	if not targetIdx then targetIdx=getMinIndex() end
+	while autopilotActive do
+		local char=player.Character
+		local humanoid=char and char:FindFirstChildOfClass("Humanoid")
+		if not char or not humanoid or humanoid.Health<=0 then break end
+		if not targetIdx then
+			hoverWaitOneFrame()
+			targetIdx=getMinIndex()
+		else
+			if not (indexToPart[targetIdx] and indexToPart[targetIdx].Parent) then
+				local nextAvail=getNextExistingIndex(targetIdx)
+				if nextAvail then
+					targetIdx=nextAvail
+				else
+					hoverWaitOneFrame()
+				end
+			else
+				local targetPart=indexToPart[targetIdx]
+				if targetPart and targetPart.Parent then
+					local ok=flyToPart(targetPart)
+					if not ok then break end
+					partsPassed=partsPassed+1
+					if checkpointsContainer and (partsPassed % CLEANUP_EVERY_N_PARTS==0) then
+						cleanupWorkspace()
+					end
+					local arrivedIdx=toIndex(targetPart.Name) or targetIdx
+					if arrivedIdx==243 then
+						local newIdx=handleFlyAndWaitAtIndex(243,POS_243)
+						if not autopilotActive then break end
+						if newIdx then
+							hoverWaitOneFrame()
+							local t0=tick()
+							while tick()-t0<DELAY_BETWEEN_PARTS do
+								if not autopilotActive then break end
+								local c=player.Character
+								local h=c and c:FindFirstChildOfClass("Humanoid")
+								if not c or not h or h.Health<=0 then
+                                    autopilotActive=false
+									break
+								end
+								RunService.Heartbeat:Wait()
+							end
+							targetIdx=getNextExistingIndex(newIdx) or newIdx
+						else
+							break
+						end
+					elseif arrivedIdx==100 then
+						local newIdx=handleFlyAndWaitAtIndex(100,POS_100)
+						if not autopilotActive then break end
+						if newIdx then
+							hoverWaitOneFrame()
+							local t0=tick()
+							while tick()-t0<DELAY_BETWEEN_PARTS do
+								if not autopilotActive then break end
+								local c=player.Character
+								local h=c and c:FindFirstChildOfClass("Humanoid")
+								if not c or not h or h.Health<=0 then
+									autopilotActive=false
+									break
+								end
+								RunService.Heartbeat:Wait()
+							end
+							targetIdx=getNextExistingIndex(newIdx) or newIdx
+						else
+							break
+						end
+					else
+						hoverWaitOneFrame()
+						local t0=tick()
+						while tick()-t0<DELAY_BETWEEN_PARTS do
+							if not autopilotActive then break end
+							local c=player.Character
+							local h=c and c:FindFirstChildOfClass("Humanoid")
+							if not c or not h or h.Health<=0 then
+								autopilotActive=false
+								break
+							end
+							RunService.Heartbeat:Wait()
+						end
+						targetIdx=targetIdx+1
+					end
+				else
+					hoverWaitOneFrame()
+				end
+			end
+		end
+	end
+	stopAutopilot()
+end
+
+pcall(function()
+	if readfile then
+		isOn=(readfile("NexusHub_toggle.txt")=="true")
+	end
+end)
+
+if inputConn then inputConn:Disconnect() inputConn=nil end
+inputConn=UIS.InputBegan:Connect(function(input,_)
+	if input.UserInputType~=Enum.UserInputType.Keyboard then return end
+	if UIS:GetFocusedTextBox() then return end
+	if input.KeyCode==Enum.KeyCode.T then
+		isOn=true
+		SaveState()
+		UpdateToggle()
+		startAutopilot()
+	elseif input.KeyCode==Enum.KeyCode.Y then
+		isOn=false
+		SaveState()
+		UpdateToggle()
+		stopAutopilot()
+	end
+end)
+
+if charAddedConn then charAddedConn:Disconnect() charAddedConn=nil end
+charAddedConn=player.CharacterAdded:Connect(function(_char)
+	task.wait(0.75)
+	if isOn then
+		startAutopilot()
+	end
+end)
+
+local function New(class,props)
+	local o=Instance.new(class)
+	for k,v in pairs(props) do o[k]=v end
+	return o
+end
+
+local gui=New("ScreenGui",{ResetOnSpawn=false,Parent=CoreGui})
+local Main=New("Frame",{Parent=gui,Size=UDim2.new(0,220,0,175),Position=UDim2.new(0.5,-110,0.5,-180),BackgroundColor3=Color3.fromRGB(118,145,255),BorderSizePixel=3,BorderColor3=Color3.fromRGB(0,0,0)})
+New("UICorner",{CornerRadius=UDim.new(0,14),Parent=Main})
+
+local dragging=false
+local dragStart,startPos
+Main.InputBegan:Connect(function(input)
+	if input.UserInputType==Enum.UserInputType.MouseButton1 then
+		dragging=true
+		dragStart=input.Position
+		startPos=Main.Position
+	end
+end)
+Main.InputEnded:Connect(function(input)
+	if input.UserInputType==Enum.UserInputType.MouseButton1 then
+		dragging=false
+	end
+end)
+UIS.InputChanged:Connect(function(input)
+	if dragging and input.UserInputType==Enum.UserInputType.MouseMovement then
+		local d=input.Position-dragStart
+		Main.Position=UDim2.new(startPos.X.Scale,startPos.X.Offset+d.X,startPos.Y.Scale,startPos.Y.Offset+d.Y)
+	end
+end)
+
+New("TextLabel",{Parent=Main,Size=UDim2.new(1,0,0,45),BackgroundTransparency=1,Text="⚙ Nexus Hub – V1.0.0",TextColor3=Color3.fromRGB(255,255,255),Font=Enum.Font.GothamSemibold,TextSize=20})
+local Holder=New("Frame",{Parent=Main,Size=UDim2.new(1,-20,1,-60),Position=UDim2.new(0,10,0,55),BackgroundTransparency=1})
+New("UIListLayout",{Parent=Holder,FillDirection=Enum.FillDirection.Vertical,Padding=UDim.new(0,10),HorizontalAlignment=Enum.HorizontalAlignment.Center})
+
+local Toggle=New("TextButton",{Parent=Holder,Size=UDim2.new(1,0,0,45),BackgroundColor3=isOn and Color3.fromRGB(50,120,255) or Color3.fromRGB(255,255,255),BorderSizePixel=2,BorderColor3=Color3.fromRGB(0,0,0),Text=isOn and "On" or "Off",TextColor3=Color3.fromRGB(0,0,0),Font=Enum.Font.Gotham,TextSize=18})
+New("UICorner",{CornerRadius=UDim.new(0,10),Parent=Toggle})
+
+SaveState=function()
+	if writefile then
+		writefile("NexusHub_toggle.txt",tostring(isOn))
+	end
+end
+UpdateToggle=function()
+	Toggle.Text=isOn and "On" or "Off"
+	Toggle.BackgroundColor3=isOn and Color3.fromRGB(50,120,255) or Color3.fromRGB(255,255,255)
+end
+
+Toggle.MouseButton1Click:Connect(function()
+	isOn=not isOn
+	UpdateToggle()
+	SaveState()
+	if isOn then
+		startAutopilot()
+	else
+		stopAutopilot()
+	end
+end)
+
+local HopBtn=New("TextButton",{Parent=Holder,Size=UDim2.new(1,0,0,45),BackgroundColor3=Color3.fromRGB(255,255,255),BorderSizePixel=2,BorderColor3=Color3.fromRGB(0,0,0),Text="Hop Sever",TextColor3=Color3.fromRGB(0,0,0),Font=Enum.Font.Gotham,TextSize=18})
+New("UICorner",{CornerRadius=UDim.new(0,10),Parent=HopBtn})
+HopBtn.MouseButton1Click:Connect(function()
+	SaveState()
+	if queue_on_teleport then
+		queue_on_teleport([[loadstring(game:HttpGet("https://pastebin.com/raw/gg7NvqJd"))()]])
+	end
+	TeleportService:Teleport(game.PlaceId)
+end)
+
+task.spawn(function()
+	local border=Main
+	local blue=Color3.fromRGB(118,145,255)
+	local purple=Color3.fromRGB(170,110,255)
+	while true do
+		TweenService:Create(border,TweenInfo.new(1.5,Enum.EasingStyle.Sine),{BorderColor3=purple}):Play()
+		task.wait(1.5)
+		TweenService:Create(border,TweenInfo.new(1.5,Enum.EasingStyle.Sine),{BorderColor3=blue}):Play()
+		task.wait(1.5)
+	end
+end)
+
+task.spawn(function()
+	for i=1,5 do
+		local ok=pcall(function()
+			StarterGui:SetCore("SendNotification",{
+				Title="Nexus Hub",
+				Text="Welcom To Nexus Hub - This Is Beta Version If You Encounter Any Errors, Please Contact nhatbinhduong37@gmail.com For Support ,Thank You !",
+				Duration=10
+			})
+		end)
+		if ok then break end
+		task.wait(1)
+	end
+end)
+
+if isOn then
+	startAutopilot()
+end
