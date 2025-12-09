@@ -15,7 +15,7 @@ local CLEANUP_EVERY_N_PARTS=3
 local TRAVEL_SPEED_STUDS_PER_SEC=72
 local ARRIVAL_DIST=1.25
 local POS_243=Vector3.new(1755.76,715.21,-115.73)
-local POS_100=Vector3.new(-192.46,145.71,692.63)
+local POS_100=Vector3.new(-504, 153, 693)
 
 local checkpointsContainer=nil
 local indexToPart={}
