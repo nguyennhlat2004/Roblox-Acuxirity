@@ -1,1 +1,2 @@
 game:GetService("Players").LocalPlayer:Kick("Are You Banned For Use Script")
+Print("Hải Hường")
