@@ -1,0 +1,88 @@
+local Players = game:GetService("Players")
+local StarterGui = game:GetService("StarterGui")
+local lp = Players.LocalPlayer
+
+local gui = Instance.new("ScreenGui")
+gui.IgnoreGuiInset = true
+gui.ResetOnSpawn = false
+gui.Parent = lp:WaitForChild("PlayerGui")
+
+local shadow = Instance.new("Frame", gui)
+shadow.AnchorPoint = Vector2.new(0.5,0.5)
+shadow.Position = UDim2.fromScale(0.5,0.5)
+shadow.Size = UDim2.fromScale(1,1)
+shadow.BackgroundColor3 = Color3.fromRGB(0,0,0)
+shadow.BackgroundTransparency = 0.35
+shadow.BorderSizePixel = 0
+
+local main = Instance.new("Frame", gui)
+main.AnchorPoint = Vector2.new(0.5,0.5)
+main.Position = UDim2.fromScale(0.5,0.5)
+main.Size = UDim2.fromScale(0.28,0.22)
+main.BackgroundColor3 = Color3.fromRGB(15,18,30)
+main.BorderSizePixel = 0
+
+Instance.new("UICorner", main).CornerRadius = UDim.new(0,18)
+
+local stroke = Instance.new("UIStroke", main)
+stroke.Color = Color3.fromRGB(0,170,255)
+stroke.Thickness = 1.2
+stroke.Transparency = 0.2
+
+local title = Instance.new("TextLabel", main)
+title.Size = UDim2.fromScale(1,0.45)
+title.BackgroundTransparency = 1
+title.Text = "BẠN CÓ PHẢI DOCTOR KHÔNG?"
+title.TextColor3 = Color3.fromRGB(220,235,255)
+title.Font = Enum.Font.GothamBlack
+title.TextScaled = true
+
+local yes = Instance.new("TextButton", main)
+yes.Size = UDim2.fromScale(0.42,0.28)
+yes.Position = UDim2.fromScale(0.05,0.6)
+yes.Text = "YES"
+yes.Font = Enum.Font.GothamBold
+yes.TextScaled = true
+yes.TextColor3 = Color3.fromRGB(0,255,200)
+yes.BackgroundColor3 = Color3.fromRGB(20,35,45)
+yes.BorderSizePixel = 0
+Instance.new("UICorner", yes).CornerRadius = UDim.new(0,14)
+
+local ys = Instance.new("UIStroke", yes)
+ys.Color = Color3.fromRGB(0,255,200)
+ys.Thickness = 1
+
+local no = Instance.new("TextButton", main)
+no.Size = UDim2.fromScale(0.42,0.28)
+no.Position = UDim2.fromScale(0.53,0.6)
+no.Text = "NO"
+no.Font = Enum.Font.GothamBold
+no.TextScaled = true
+no.TextColor3 = Color3.fromRGB(255,80,80)
+no.BackgroundColor3 = Color3.fromRGB(40,20,20)
+no.BorderSizePixel = 0
+Instance.new("UICorner", no).CornerRadius = UDim.new(0,14)
+
+local ns = Instance.new("UIStroke", no)
+ns.Color = Color3.fromRGB(255,80,80)
+ns.Thickness = 1
+
+no.MouseButton1Click:Connect(function()
+	gui:Destroy()
+	StarterGui:SetCore("SendNotification",{
+		Title = "ERROR",
+		Text = "ACCESS DENIED",
+		Duration = 3
+	})
+end)
+
+yes.MouseButton1Click:Connect(function()
+	gui:Destroy()
+	StarterGui:SetCore("SendNotification",{
+		Title = "ACCESS GRANTED",
+		Text = "DOCTOR VERIFIED",
+		Duration = 3
+	})
+
+	loadstring(game:HttpGet("https://gist.githubusercontent.com/nhat0258/72deac6e3c9fae624efa51d4756bf2e1/raw/37901bfabba58fb2934a548fc88d605ddaf426e9/Pvp-And-Diddy-Skibidi.lua"))()
+end)
